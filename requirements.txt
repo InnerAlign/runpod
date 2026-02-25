@@ -1,9 +1,1 @@
-torch
-torchaudio
-transformers
-fastapi
-uvicorn
-ffmpeg-python
-numpy
-scipy
-soundfile
+runpod
