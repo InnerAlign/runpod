@@ -4,3 +4,5 @@ torchaudio
 transformers
 soundfile
 numpy
+requests
+orpheus
