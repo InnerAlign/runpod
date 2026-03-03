@@ -1,8 +1,8 @@
 import runpod
 import requests
+import boto3
 import os
 import tempfile
-import base64
 
 # -----------------------------
 # Normalize Bubble URL
@@ -30,11 +30,23 @@ def download_audio(url: str) -> str:
     return temp_path
 
 # -----------------------------
-# Convert file to Base64
+# Upload file to R2
 # -----------------------------
-def file_to_base64(path: str) -> str:
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
+def upload_to_r2(local_path: str, user_id: str, filename: str) -> str:
+    session = boto3.session.Session()
+
+    s3 = session.client(
+        service_name="s3",
+        endpoint_url=os.environ["R2_ENDPOINT"],
+        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"]
+    )
+
+    r2_key = f"users/{user_id}/voice-profiles/{filename}"
+
+    s3.upload_file(local_path, os.environ["R2_BUCKET"], r2_key)
+
+    return r2_key
 
 # -----------------------------
 # Main handler
@@ -48,19 +60,19 @@ def handler(event):
 
     # Step 2: Run Orpheus training
     # Replace this with your actual Orpheus call
-    # It should return the path to the generated voice profile file(s)
+    # It must return the path to the generated file
     voice_profile_path = run_orpheus_training(local_audio_path, user_id)
 
-    # Step 3: Convert output file to Base64 for Bubble
-    voice_profile_b64 = file_to_base64(voice_profile_path)
+    # Step 3: Upload Orpheus output to R2
+    filename = os.path.basename(voice_profile_path)
+    r2_key = upload_to_r2(voice_profile_path, user_id, filename)
 
-    # Step 4: Return the file directly to Bubble
+    # Step 4: Return metadata to Bubble
     return {
         "status": "success",
         "user_id": user_id,
         "audio_url_used": normalize_url(audio_url),
-        "voice_profile_file_base64": voice_profile_b64,
-        "voice_profile_filename": os.path.basename(voice_profile_path)
+        "voice_profile_key": r2_key
     }
 
 runpod.serverless.start({"handler": handler})
