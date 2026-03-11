@@ -1,113 +1,139 @@
 import os
 import tempfile
+from typing import Any, Dict, Optional
+
 import requests
-import boto3
 import runpod
 
-# -----------------------------
-# URL normalization
-# -----------------------------
-def normalize_url(url: str) -> str:
-    if url.startswith("//"):
-        return "https:" + url
-    if not url.startswith("http"):
-        return "https://" + url
-    return url
 
-# -----------------------------
-# Download audio from Bubble
-# -----------------------------
-def download_audio(url: str) -> str:
-    url = normalize_url(url)
-    resp = requests.get(url, stream=True)
-    resp.raise_for_status()
+def validate_input(job_input: Dict[str, Any]) -> Optional[str]:
+    required_fields = [
+        "job_id",
+        "user_id",
+        "pipeline_type",
+        "script_text",
+        "voice_source",
+    ]
 
-    fd, temp_path = tempfile.mkstemp(suffix=".mp3")
-    with os.fdopen(fd, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=8192):
-            f.write(chunk)
+    for field in required_fields:
+        if not job_input.get(field):
+            return f"Missing required field: {field}"
+
+    voice_source = job_input.get("voice_source")
+    if voice_source not in ["user_recording", "ai_default_voice"]:
+        return "voice_source must be 'user_recording' or 'ai_default_voice'"
+
+    if voice_source == "user_recording" and not job_input.get("source_audio_url"):
+        return "source_audio_url is required when voice_source is 'user_recording'"
+
+    return None
+
+
+def download_file(url: str, suffix: str = ".wav") -> str:
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+
+    fd, temp_path = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+
+    with open(temp_path, "wb") as f:
+        f.write(response.content)
 
     return temp_path
 
-# -----------------------------
-# Orpheus training
-# -----------------------------
-def run_orpheus_training(audio_path: str, user_id: str) -> str:
-    """
-    TODO: Replace this body with your real Orpheus training code.
 
-    Shape you want:
-    - Load Orpheus model (once, globally, when you’re ready)
-    - Train a voice profile from `audio_path`
-    - Save the resulting profile to a file
-    - Return that file path
-    """
-    output_path = f"/tmp/{user_id}_voice_profile.json"
-    with open(output_path, "w") as f:
-        f.write('{"status": "ok", "note": "replace with real Orpheus profile"}')
-    return output_path
-
-# -----------------------------
-# R2 upload
-# -----------------------------
-def upload_to_r2(local_path: str, user_id: str, filename: str) -> str:
-    session = boto3.session.Session()
-
-    s3 = session.client(
-        service_name="s3",
-        endpoint_url=os.environ["R2_ENDPOINT"],
-        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
-        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
-    )
-
-    bucket = os.environ["R2_BUCKET"]
-    r2_key = f"users/{user_id}/voice-profiles/{filename}"
-
-    s3.upload_file(local_path, bucket, r2_key)
-
-    return r2_key
-
-# -----------------------------
-# Main handler
-# -----------------------------
-def handler(event):
-    # Expecting:
-    # {
-    #   "input": {
-    #       "user_id": "...",
-    #       "audio_url": "..."
-    #   }
-    # }
-    inp = event.get("input", {})
-    user_id = inp.get("user_id")
-    audio_url = inp.get("audio_url")
-
-    if not user_id or not audio_url:
-        return {
-            "status": "error",
-            "message": "Missing user_id or audio_url in input."
-        }
-
-    # 1) Download source audio from Bubble
-    local_audio_path = download_audio(audio_url)
-
-    # 2) Run Orpheus training (replace internals with real training later)
-    voice_profile_path = run_orpheus_training(local_audio_path, user_id)
-
-    # 3) Upload Orpheus output to R2
-    filename = os.path.basename(voice_profile_path)
-    r2_key = upload_to_r2(voice_profile_path, user_id, filename)
-
-    # 4) Construct a voice model ID you’ll reuse for TTS
-    voice_model_id = f"orpheus-{user_id}-v1"
-
-    # 5) Return metadata to Bubble
+def create_voice_profile(source_audio_path: str, user_id: str) -> Dict[str, Any]:
+    # Placeholder for Orpheus voice-profile creation
+    # Replace this with real Orpheus code later.
     return {
-        "status": "success",
-        "user_id": user_id,
-        "audio_url_used": normalize_url(audio_url),
-        "voice_profile_key": r2_key,
-        "voice_model_id": voice_model_id,
+        "status": "completed",
+        "voice_model_key": f"users/{user_id}/voice-profiles/default_v1.bin"
     }
 
-runpod.serverless.start({"handler": handler})
+
+def generate_tts(script_text: str, voice_source: str, user_id: str) -> Dict[str, Any]:
+    # Placeholder for Orpheus TTS generation
+    return {
+        "status": "completed",
+        "tts_audio_key": f"users/{user_id}/tts/generated_tts.wav"
+    }
+
+
+def generate_music(music_prompt: str, user_id: str) -> Dict[str, Any]:
+    # Placeholder for InspireMusic generation
+    return {
+        "status": "completed",
+        "music_audio_key": f"users/{user_id}/music/generated_music.wav"
+    }
+
+
+def mix_audio(user_id: str) -> Dict[str, Any]:
+    # Placeholder for FFmpeg mixing
+    return {
+        "status": "completed",
+        "final_audio_key": f"users/{user_id}/final/final_meditation.wav"
+    }
+
+
+def handler(event: Dict[str, Any]) -> Dict[str, Any]:
+    job_input = event.get("input", {})
+
+    error = validate_input(job_input)
+    if error:
+        return {
+            "status": "failed",
+            "error_message": error,
+            "results": {}
+        }
+
+    job_id = job_input["job_id"]
+    user_id = job_input["user_id"]
+    script_text = job_input["script_text"]
+    voice_source = job_input["voice_source"]
+    source_audio_url = job_input.get("source_audio_url", "")
+    music_prompt = job_input.get("music_prompt", "")
+
+    results: Dict[str, Any] = {
+        "voice_model_key": "",
+        "tts_audio_key": "",
+        "music_audio_key": "",
+        "final_audio_key": "",
+    }
+
+    try:
+        if voice_source == "user_recording":
+            source_audio_path = download_file(source_audio_url)
+            voice_profile_result = create_voice_profile(source_audio_path, user_id)
+            results["voice_model_key"] = voice_profile_result["voice_model_key"]
+        else:
+            results["voice_model_key"] = "system/default"
+
+        tts_result = generate_tts(script_text, voice_source, user_id)
+        results["tts_audio_key"] = tts_result["tts_audio_key"]
+
+        music_result = generate_music(music_prompt, user_id)
+        results["music_audio_key"] = music_result["music_audio_key"]
+
+        mix_result = mix_audio(user_id)
+        results["final_audio_key"] = mix_result["final_audio_key"]
+
+        return {
+            "status": "completed",
+            "job_id": job_id,
+            "user_id": user_id,
+            "results": results,
+            "error_message": ""
+        }
+
+    except Exception as e:
+        return {
+            "status": "failed",
+            "job_id": job_id,
+            "user_id": user_id,
+            "results": results,
+            "error_message": str(e)
+        }
+
+
+if __name__ == "__main__":
+    runpod.serverless.start({"handler": handler})
