@@ -1,8 +1,5 @@
 runpod
-torch
-torchaudio
-transformers
+requests
 soundfile
 numpy
-requests
-orpheus
+pydub
