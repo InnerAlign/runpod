@@ -1,4 +1,3 @@
-import io
 import os
 import shutil
 import subprocess
@@ -12,23 +11,21 @@ import boto3
 import requests
 import runpod
 
-# Orpheus official package usage pattern:
-# from orpheus_tts import OrpheusModel
 from orpheus_tts import OrpheusModel
-
-# InspireMusic official Python usage pattern:
-# from inspiremusic.cli.inference import InspireMusicModel, env_variables
 from inspiremusic.cli.inference import InspireMusicModel, env_variables
 
 
-HANDLER_VERSION = "2026-03-12-real-r2-orpheus-inspiremusic-v1"
+HANDLER_VERSION = "2026-03-12-inneralign-arch-v1"
 
 R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID", "")
 R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "")
 R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "")
 R2_BUCKET = os.getenv("R2_BUCKET", "")
 
-ORPHEUS_MODEL_NAME = os.getenv("ORPHEUS_MODEL_NAME", "canopylabs/orpheus-tts-0.1-finetune-prod")
+ORPHEUS_MODEL_NAME = os.getenv(
+    "ORPHEUS_MODEL_NAME",
+    "canopylabs/orpheus-tts-0.1-finetune-prod",
+)
 ORPHEUS_DEFAULT_VOICE = os.getenv("ORPHEUS_DEFAULT_VOICE", "tara")
 
 INSPIREMUSIC_MODEL_NAME = os.getenv("INSPIREMUSIC_MODEL_NAME", "InspireMusic-Base")
@@ -92,8 +89,12 @@ def upload_bytes_to_r2(data: bytes, key: str, content_type: str) -> str:
 
 def upload_file_to_r2(file_path: str, key: str, content_type: str) -> str:
     s3 = get_s3_client()
-    extra_args = {"ContentType": content_type}
-    s3.upload_file(file_path, R2_BUCKET, key, ExtraArgs=extra_args)
+    s3.upload_file(
+        file_path,
+        R2_BUCKET,
+        key,
+        ExtraArgs={"ContentType": content_type},
+    )
     return key
 
 
@@ -169,8 +170,10 @@ def find_latest_wav(directory: str) -> str:
         for name in files:
             if name.lower().endswith(".wav"):
                 wavs.append(os.path.join(root, name))
+
     if not wavs:
         raise RuntimeError(f"No .wav file found in {directory}")
+
     wavs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
     return wavs[0]
 
@@ -178,7 +181,13 @@ def find_latest_wav(directory: str) -> str:
 def generate_music_with_inspiremusic(prompt: str, output_path: str) -> None:
     temp_result_dir = tempfile.mkdtemp(prefix="inspiremusic_")
     try:
-        # Use the official CLI path shown by the repo.
+        # Try Python API first
+        try:
+            INSPIREMUSIC_MODEL.inference("text-to-music", prompt)
+        except Exception:
+            pass
+
+        # Then try CLI output path approach
         cmd = [
             "python3",
             "/opt/FunMusic/inspiremusic/bin/inference.py",
@@ -194,14 +203,6 @@ def generate_music_with_inspiremusic(prompt: str, output_path: str) -> None:
             "--chorus", "verse",
             "--fast",
         ]
-
-        # The official CLI expects prompt data files; the Python API is less explicit about export paths.
-        # We try the Python API first, then fall back to the CLI result dir approach if needed.
-        try:
-            INSPIREMUSIC_MODEL.inference("text-to-music", prompt)
-        except Exception:
-            pass
-
         subprocess.run(cmd, check=False, capture_output=True, text=True)
 
         latest_wav = find_latest_wav(temp_result_dir)
@@ -227,11 +228,7 @@ def mix_audio_ffmpeg(tts_path: str, music_path: str, output_path: str) -> None:
         raise RuntimeError(f"ffmpeg mix failed: {completed.stderr}")
 
 
-def build_voice_profile_asset(user_id: str, source_audio_path: str, source_audio_url: str, run_id: str) -> str:
-    """
-    This stores the source voice asset in R2 and returns its key.
-    It is a durable voice-profile source record, not a verified reusable Orpheus 'voice ID'.
-    """
+def store_voice_source_asset(user_id: str, source_audio_path: str, run_id: str) -> str:
     if source_audio_path:
         key = make_key(user_id, "voice-profiles", f"{now_stamp()}_{run_id}_source.wav")
         return upload_file_to_r2(source_audio_path, key, "audio/wav")
@@ -251,6 +248,7 @@ def handle_onboarding_pipeline(job: Dict[str, Any], job_input: Dict[str, Any]) -
     voice_source = job_input["voice_source"]
     source_audio_url = job_input.get("source_audio_url", "")
     music_prompt = job_input.get("music_prompt", "gentle ambient meditation background")
+
     run_id = str(uuid.uuid4())[:8]
     stamp = now_stamp()
 
@@ -269,7 +267,7 @@ def handle_onboarding_pipeline(job: Dict[str, Any], job_input: Dict[str, Any]) -
 
     try:
         print("HANDLER_VERSION:", HANDLER_VERSION)
-        print("JOB_ID:", job.get("id"))
+        print("RUNPOD_JOB_ID:", job.get("id"))
         print("INPUT_KEYS:", list(job_input.keys()))
 
         if voice_source == "user_recording":
@@ -277,10 +275,9 @@ def handle_onboarding_pipeline(job: Dict[str, Any], job_input: Dict[str, Any]) -
             source_audio_path = download_file(source_audio_url)
 
         runpod.serverless.progress_update(job, "creating_voice_profile")
-        results["voice_model_key"] = build_voice_profile_asset(
+        results["voice_model_key"] = store_voice_source_asset(
             user_id=user_id,
             source_audio_path=source_audio_path,
-            source_audio_url=source_audio_url,
             run_id=run_id,
         )
 
@@ -288,18 +285,16 @@ def handle_onboarding_pipeline(job: Dict[str, Any], job_input: Dict[str, Any]) -
         fd_tts, tts_path = tempfile.mkstemp(suffix=".wav")
         os.close(fd_tts)
 
-        # Verified official example uses preset voice names.
-        # True reusable voice cloning from uploaded user audio is not wired here.
+        # Uses a documented stable Orpheus voice path for now.
         write_orpheus_output_to_wav(
             prompt=script_text,
             voice_name=ORPHEUS_DEFAULT_VOICE,
             output_path=tts_path,
         )
 
-        tts_filename = f"{stamp}_{run_id}_tts.wav"
         results["tts_audio_key"] = upload_file_to_r2(
             tts_path,
-            make_key(user_id, "tts", tts_filename),
+            make_key(user_id, "tts", f"{stamp}_{run_id}_tts.wav"),
             "audio/wav",
         )
 
@@ -309,10 +304,9 @@ def handle_onboarding_pipeline(job: Dict[str, Any], job_input: Dict[str, Any]) -
 
         generate_music_with_inspiremusic(music_prompt, music_path)
 
-        music_filename = f"{stamp}_{run_id}_music.wav"
         results["music_audio_key"] = upload_file_to_r2(
             music_path,
-            make_key(user_id, "music", music_filename),
+            make_key(user_id, "music", f"{stamp}_{run_id}_music.wav"),
             "audio/wav",
         )
 
@@ -322,10 +316,9 @@ def handle_onboarding_pipeline(job: Dict[str, Any], job_input: Dict[str, Any]) -
 
         mix_audio_ffmpeg(tts_path, music_path, final_path)
 
-        final_filename = f"{stamp}_{run_id}_final.wav"
         results["final_audio_key"] = upload_file_to_r2(
             final_path,
-            make_key(user_id, "final", final_filename),
+            make_key(user_id, "final", f"{stamp}_{run_id}_final.wav"),
             "audio/wav",
         )
 
@@ -364,6 +357,7 @@ def handle_onboarding_pipeline(job: Dict[str, Any], job_input: Dict[str, Any]) -
 def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     job_input = job["input"]
     error = validate_input(job_input)
+
     if error:
         return {
             "refresh_worker": True,
