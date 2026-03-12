@@ -27,15 +27,10 @@ COPY requirements.txt /app/requirements.txt
 RUN python3 -m pip install --upgrade pip setuptools wheel && \
     python3 -m pip install -r /app/requirements.txt
 
-# Install InspireMusic from the official repo so its Python package and CLI are available.
+# Install InspireMusic toolkit from the official repo.
 RUN git clone https://github.com/FunAudioLLM/FunMusic.git /opt/FunMusic && \
     cd /opt/FunMusic && \
     python3 -m pip install -e .
-
-# Optional: preload InspireMusic model repo structure expected by official examples.
-# This can fail if the remote is unavailable; it is safe to comment out and mount/provide models another way.
-RUN mkdir -p /opt/FunMusic/pretrained_models && \
-    git clone https://www.modelscope.cn/iic/InspireMusic.git /opt/FunMusic/pretrained_models/InspireMusic || true
 
 COPY runpod_handler.py /app/runpod_handler.py
 
