@@ -8,7 +8,6 @@ import runpod
 
 def validate_input(job_input: Dict[str, Any]) -> Optional[str]:
     required_fields = [
-        "job_id",
         "user_id",
         "pipeline_type",
         "script_text",
@@ -18,6 +17,12 @@ def validate_input(job_input: Dict[str, Any]) -> Optional[str]:
     for field in required_fields:
         if not job_input.get(field):
             return f"Missing required field: {field}"
+
+    pipeline_type = job_input.get("pipeline_type")
+    allowed_pipeline_types = ["onboarding"]
+
+    if pipeline_type not in allowed_pipeline_types:
+        return f"pipeline_type must be one of: {', '.join(allowed_pipeline_types)}"
 
     voice_source = job_input.get("voice_source")
     if voice_source not in ["user_recording", "ai_default_voice"]:
@@ -44,7 +49,6 @@ def download_file(url: str, suffix: str = ".wav") -> str:
 
 def create_voice_profile(source_audio_path: str, user_id: str) -> Dict[str, Any]:
     # Placeholder for Orpheus voice-profile creation
-    # Replace this with real Orpheus code later.
     return {
         "status": "completed",
         "voice_model_key": f"users/{user_id}/voice-profiles/default_v1.bin"
@@ -75,18 +79,7 @@ def mix_audio(user_id: str) -> Dict[str, Any]:
     }
 
 
-def handler(event: Dict[str, Any]) -> Dict[str, Any]:
-    job_input = event.get("input", {})
-
-    error = validate_input(job_input)
-    if error:
-        return {
-            "status": "failed",
-            "error_message": error,
-            "results": {}
-        }
-
-    job_id = job_input["job_id"]
+def handle_onboarding_pipeline(job_input: Dict[str, Any]) -> Dict[str, Any]:
     user_id = job_input["user_id"]
     script_text = job_input["script_text"]
     voice_source = job_input["voice_source"]
@@ -119,8 +112,8 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
 
         return {
             "status": "completed",
-            "job_id": job_id,
             "user_id": user_id,
+            "pipeline_type": "onboarding",
             "results": results,
             "error_message": ""
         }
@@ -128,11 +121,34 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         return {
             "status": "failed",
-            "job_id": job_id,
             "user_id": user_id,
+            "pipeline_type": "onboarding",
             "results": results,
             "error_message": str(e)
         }
+
+
+def handler(event: Dict[str, Any]) -> Dict[str, Any]:
+    job_input = event.get("input", {})
+
+    error = validate_input(job_input)
+    if error:
+        return {
+            "status": "failed",
+            "results": {},
+            "error_message": error
+        }
+
+    pipeline_type = job_input["pipeline_type"]
+
+    if pipeline_type == "onboarding":
+        return handle_onboarding_pipeline(job_input)
+
+    return {
+        "status": "failed",
+        "results": {},
+        "error_message": f"Unsupported pipeline_type: {pipeline_type}"
+    }
 
 
 if __name__ == "__main__":
