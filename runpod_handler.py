@@ -15,7 +15,7 @@ from orpheus_tts import OrpheusModel
 from inspiremusic.cli.inference import InspireMusicModel, env_variables
 
 
-HANDLER_VERSION = "2026-03-12-inneralign-arch-v1"
+HANDLER_VERSION = "2026-03-17-metadata-contract-v1"
 
 R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID", "")
 R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "")
@@ -117,10 +117,19 @@ def validate_input(job_input: Dict[str, Any]) -> Optional[str]:
         "pipeline_type",
         "script_text",
         "voice_source",
+        "voice_style",
+        "music_style",
+        "music_intensity",
+        "energy_curve",
+        "breath_pacing_style",
+        "pause_density",
+        "estimated_duration_seconds",
+        "meditation_title",
+        "meditation_subtitle",
     ]
 
     for field in required_fields:
-        if not job_input.get(field):
+        if job_input.get(field) in [None, ""]:
             return f"Missing required field: {field}"
 
     if job_input["pipeline_type"] != "onboarding":
@@ -131,6 +140,13 @@ def validate_input(job_input: Dict[str, Any]) -> Optional[str]:
 
     if job_input["voice_source"] == "user_recording" and not job_input.get("source_audio_url"):
         return "source_audio_url is required when voice_source is 'user_recording'"
+
+    try:
+        duration = int(job_input["estimated_duration_seconds"])
+        if duration <= 0:
+            return "estimated_duration_seconds must be greater than 0"
+    except Exception:
+        return "estimated_duration_seconds must be a number"
 
     return None
 
@@ -149,7 +165,11 @@ def ensure_models_loaded() -> None:
         INSPIREMUSIC_MODEL = InspireMusicModel(model_name=INSPIREMUSIC_MODEL_NAME)
 
 
-def write_orpheus_output_to_wav(prompt: str, voice_name: str, output_path: str) -> None:
+def write_orpheus_output_to_wav(
+    prompt: str,
+    voice_name: str,
+    output_path: str,
+) -> None:
     syn_tokens = ORPHEUS_MODEL.generate_speech(
         prompt=prompt,
         voice=voice_name,
@@ -178,16 +198,17 @@ def find_latest_wav(directory: str) -> str:
     return wavs[0]
 
 
-def generate_music_with_inspiremusic(prompt: str, output_path: str) -> None:
+def generate_music_with_inspiremusic(
+    prompt: str,
+    output_path: str,
+) -> None:
     temp_result_dir = tempfile.mkdtemp(prefix="inspiremusic_")
     try:
-        # Try Python API first
         try:
             INSPIREMUSIC_MODEL.inference("text-to-music", prompt)
         except Exception:
             pass
 
-        # Then try CLI output path approach
         cmd = [
             "python3",
             "/opt/FunMusic/inspiremusic/bin/inference.py",
@@ -211,7 +232,11 @@ def generate_music_with_inspiremusic(prompt: str, output_path: str) -> None:
         shutil.rmtree(temp_result_dir, ignore_errors=True)
 
 
-def mix_audio_ffmpeg(tts_path: str, music_path: str, output_path: str) -> None:
+def mix_audio_ffmpeg(
+    tts_path: str,
+    music_path: str,
+    output_path: str,
+) -> None:
     cmd = [
         "ffmpeg",
         "-y",
@@ -240,6 +265,33 @@ def store_voice_source_asset(user_id: str, source_audio_path: str, run_id: str) 
     return upload_bytes_to_r2(payload, key, "application/json")
 
 
+def build_music_prompt(
+    meditation_title: str,
+    meditation_subtitle: str,
+    music_style: str,
+    music_intensity: str,
+    energy_curve: str,
+) -> str:
+    return (
+        f"{music_style}, {music_intensity} intensity, emotional arc {energy_curve}. "
+        f"Title: {meditation_title}. Subtitle: {meditation_subtitle}."
+    )
+
+
+def select_orpheus_voice_name(voice_style: str) -> str:
+    # Temporary stable mapping layer.
+    # Later this can branch to different real voice presets or user-cloned voices.
+    style_map = {
+        "slow_grounded_supportive": ORPHEUS_DEFAULT_VOICE,
+        "soft_calming_nurturing": ORPHEUS_DEFAULT_VOICE,
+        "warm_empowering_steady": ORPHEUS_DEFAULT_VOICE,
+        "gentle_healing_reassuring": ORPHEUS_DEFAULT_VOICE,
+        "clear_uplifting_open": ORPHEUS_DEFAULT_VOICE,
+        "deep_still_peaceful": ORPHEUS_DEFAULT_VOICE,
+    }
+    return style_map.get(voice_style, ORPHEUS_DEFAULT_VOICE)
+
+
 def handle_onboarding_pipeline(job: Dict[str, Any], job_input: Dict[str, Any]) -> Dict[str, Any]:
     ensure_models_loaded()
 
@@ -247,7 +299,16 @@ def handle_onboarding_pipeline(job: Dict[str, Any], job_input: Dict[str, Any]) -
     script_text = job_input["script_text"]
     voice_source = job_input["voice_source"]
     source_audio_url = job_input.get("source_audio_url", "")
-    music_prompt = job_input.get("music_prompt", "gentle ambient meditation background")
+
+    voice_style = job_input["voice_style"]
+    music_style = job_input["music_style"]
+    music_intensity = job_input["music_intensity"]
+    energy_curve = job_input["energy_curve"]
+    breath_pacing_style = job_input["breath_pacing_style"]
+    pause_density = job_input["pause_density"]
+    estimated_duration_seconds = int(job_input["estimated_duration_seconds"])
+    meditation_title = job_input["meditation_title"]
+    meditation_subtitle = job_input["meditation_subtitle"]
 
     run_id = str(uuid.uuid4())[:8]
     stamp = now_stamp()
@@ -258,6 +319,8 @@ def handle_onboarding_pipeline(job: Dict[str, Any], job_input: Dict[str, Any]) -
         "music_audio_key": "",
         "final_audio_key": "",
         "handler_version": HANDLER_VERSION,
+        "meditation_title": meditation_title,
+        "meditation_subtitle": meditation_subtitle,
     }
 
     source_audio_path = ""
@@ -269,6 +332,13 @@ def handle_onboarding_pipeline(job: Dict[str, Any], job_input: Dict[str, Any]) -
         print("HANDLER_VERSION:", HANDLER_VERSION)
         print("RUNPOD_JOB_ID:", job.get("id"))
         print("INPUT_KEYS:", list(job_input.keys()))
+        print("voice_style:", voice_style)
+        print("music_style:", music_style)
+        print("music_intensity:", music_intensity)
+        print("energy_curve:", energy_curve)
+        print("breath_pacing_style:", breath_pacing_style)
+        print("pause_density:", pause_density)
+        print("estimated_duration_seconds:", estimated_duration_seconds)
 
         if voice_source == "user_recording":
             runpod.serverless.progress_update(job, "downloading_source_audio")
@@ -285,10 +355,15 @@ def handle_onboarding_pipeline(job: Dict[str, Any], job_input: Dict[str, Any]) -
         fd_tts, tts_path = tempfile.mkstemp(suffix=".wav")
         os.close(fd_tts)
 
-        # Uses a documented stable Orpheus voice path for now.
+        selected_voice = select_orpheus_voice_name(voice_style)
+
+        # For now, the stable production path is:
+        # - accept voice_style / breath_pacing_style / pause_density in the contract
+        # - log them
+        # - rely on the script's pacing markers and selected voice preset
         write_orpheus_output_to_wav(
             prompt=script_text,
-            voice_name=ORPHEUS_DEFAULT_VOICE,
+            voice_name=selected_voice,
             output_path=tts_path,
         )
 
@@ -302,6 +377,14 @@ def handle_onboarding_pipeline(job: Dict[str, Any], job_input: Dict[str, Any]) -
         fd_music, music_path = tempfile.mkstemp(suffix=".wav")
         os.close(fd_music)
 
+        music_prompt = build_music_prompt(
+            meditation_title=meditation_title,
+            meditation_subtitle=meditation_subtitle,
+            music_style=music_style,
+            music_intensity=music_intensity,
+            energy_curve=energy_curve,
+        )
+
         generate_music_with_inspiremusic(music_prompt, music_path)
 
         results["music_audio_key"] = upload_file_to_r2(
@@ -314,6 +397,8 @@ def handle_onboarding_pipeline(job: Dict[str, Any], job_input: Dict[str, Any]) -
         fd_final, final_path = tempfile.mkstemp(suffix=".wav")
         os.close(fd_final)
 
+        # For now, pause_density and energy_curve are accepted and logged.
+        # Later this can drive volume automation / silence shaping if needed.
         mix_audio_ffmpeg(tts_path, music_path, final_path)
 
         results["final_audio_key"] = upload_file_to_r2(
