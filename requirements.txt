@@ -1,10 +1,2 @@
 runpod
-boto3
 requests
-numpy
-soundfile
-torch
-transformers
-orpheus-speech
-vllm==0.7.3
-huggingface_hub
