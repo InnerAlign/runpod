@@ -1,3 +1,7 @@
 runpod
 requests
 boto3
+soundfile
+numpy
+orpheus-speech
+vllm==0.7.3
